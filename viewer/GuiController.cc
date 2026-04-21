@@ -303,16 +303,11 @@ void GuiController::ChannelChanged()
     }
 
     hMain->GetXaxis()->SetRangeUser(cw->timeRangeEntry[0]->GetNumber(), cw->timeRangeEntry[1]->GetNumber());
-    int adc_min = cw->adcRangeEntry[0]->GetNumber();
-    int adc_max = cw->adcRangeEntry[1]->GetNumber();
-    if (adc_max > adc_min) {
-        hMain->GetYaxis()->SetRangeUser(adc_min, adc_max);
-    }
     if (binary_search(data->bad_channels->bad_id.begin(), data->bad_channels->bad_id.end(), channel)) {
         hMain->SetTitle( TString::Format("%s (bad channel)", hMain->GetTitle()) );
     }
 
-    TH1F *h = data->wfs.at(wfsNo+3)->Draw1D(channel, "same" ); // draw calib
+    TH1F *h = data->wfs.at(wfsNo+3)->Draw1D(channel, "same" ); // draw decon (red)
     h->SetLineColor(kRed);
 
     TH1I *ht = data->thresh_histos.at(wfsNo);
@@ -323,10 +318,41 @@ void GuiController::ChannelChanged()
     l->SetLineWidth(2);
     l->Draw();
 
+    TH1I *hh = nullptr;
     if (cw->rawWfButton->IsDown()) {
-        TH1I *hh = data->raw_wfs.at(wfsNo)->Draw1D(channel, "same"); // draw calib
+        hh = data->raw_wfs.at(wfsNo)->Draw1D(channel, "same");
         hh->SetLineColor(kBlue);
         hMain->SetTitle( TString::Format("%s, %s", hMain->GetTitle(), hh->GetTitle()) );
+    }
+
+    // Smart Y-axis range: derive from actual signal rather than the denoised
+    // waveform which may be empty. Manual ADC range entries override auto-range.
+    {
+        int adc_min = cw->adcRangeEntry[0]->GetNumber();
+        int adc_max = cw->adcRangeEntry[1]->GetNumber();
+        if (adc_max > adc_min) {
+            hMain->GetYaxis()->SetRangeUser(adc_min, adc_max);
+        } else {
+            // Start from decon waveform (primary signal source)
+            double ylo = h->GetMinimum(), yhi = h->GetMaximum();
+            // Expand to include denoised if it has real content
+            if (hwf->GetMaximum() > hwf->GetMinimum()) {
+                ylo = std::min(ylo, hwf->GetMinimum());
+                yhi = std::max(yhi, hwf->GetMaximum());
+            }
+            // Expand to include raw if it is visible
+            if (hh && hh->GetMaximum() > hh->GetMinimum()) {
+                ylo = std::min(ylo, (double)hh->GetMinimum());
+                yhi = std::max(yhi, (double)hh->GetMaximum());
+            }
+            if (yhi > ylo) {
+                double pad = 0.1 * (yhi - ylo);
+                hMain->GetYaxis()->SetRangeUser(ylo - pad, yhi + pad);
+            } else {
+                // Flat / empty channel — show a small symmetric range
+                hMain->GetYaxis()->SetRangeUser(-1.0, 1.0);
+            }
+        }
     }
 
     // mask the bad channel region
