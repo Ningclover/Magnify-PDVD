@@ -45,22 +45,30 @@ Data::Data(const char* filename, double threshold, const char* frame, int rebin)
 
     load_channelstatus();
 
-    // denoised (post noise-filter) — no fallback, just load with suffix
-    load_waveform("hu_raw" + suf, "U Plane (Denoised)", 1., threshold);
-    load_waveform("hv_raw" + suf, "V Plane (Denoised)", 1., threshold);
-    load_waveform("hw_raw" + suf, "W Plane (Denoised)", 1., threshold);
-
-    // deconvoluted — try requested frame, fall back to _gauss
-    for (int iplane=0; iplane<3; ++iplane) {
-        TString histName = Form("h%c_%s", 'u'+iplane, frame) + suf;
-        if (!rootFile->Get(histName)) {
-            TString fallback = Form("h%c_gauss", 'u'+iplane) + suf;
-            if (rootFile->Get(fallback)) {
-                cout << histName << " not found, falling back to " << fallback << endl;
-                histName = fallback;
+    // Pre-fetch decon TH2 objects (with fallback) so their geometry can be used
+    // as the dummy dimensions for the raw/denoised histograms that may be missing.
+    TH2* decon_ref[3] = {};
+    TString decon_name[3];
+    for (int iplane = 0; iplane < 3; ++iplane) {
+        decon_name[iplane] = Form("h%c_%s", 'u'+iplane, frame) + suf;
+        if (!rootFile->Get(decon_name[iplane])) {
+            TString fb = Form("h%c_gauss", 'u'+iplane) + suf;
+            if (rootFile->Get(fb)) {
+                cout << decon_name[iplane] << " not found, falling back to " << fb << endl;
+                decon_name[iplane] = fb;
             }
         }
-        load_waveform(histName, Form("%c Plane (Deconvoluted)", 'U'+iplane), 1./(500.*rebin/4.0), threshold);
+        decon_ref[iplane] = dynamic_cast<TH2*>(rootFile->Get(decon_name[iplane]));
+    }
+
+    // denoised (post noise-filter) — use decon geometry for dummies when missing
+    load_waveform("hu_raw" + suf, "U Plane (Denoised)", 1., threshold, decon_ref[0]);
+    load_waveform("hv_raw" + suf, "V Plane (Denoised)", 1., threshold, decon_ref[1]);
+    load_waveform("hw_raw" + suf, "W Plane (Denoised)", 1., threshold, decon_ref[2]);
+
+    // deconvoluted
+    for (int iplane = 0; iplane < 3; ++iplane) {
+        load_waveform(decon_name[iplane], Form("%c Plane (Deconvoluted)", 'U'+iplane), 1./(500.*rebin/4.0), threshold);
     }
 
     load_rawwaveform("hu_orig" + suf, "hu_baseline" + suf);
@@ -123,18 +131,28 @@ void Data::load_channelstatus(){
 
 int Data::GetPlaneNo(int chanNo)
 {
-    // 800 u + 800 v + 960 w = 2560
+    // Prefer decon histograms (wfs[3..5]) for range detection since they carry
+    // the real channel numbers; fall back to raw (wfs[0..2]) if needed.
+    for (int p = 0; p < 3; ++p) {
+        if (p+3 < (int)wfs.size()) {
+            Waveforms* w = wfs[p+3];
+            if (chanNo >= w->firstChannel && chanNo < w->firstChannel + w->nChannels)
+                return p;
+        }
+    }
+    for (int p = 0; p < 3; ++p) {
+        if (p < (int)wfs.size()) {
+            Waveforms* w = wfs[p];
+            if (chanNo >= w->firstChannel && chanNo < w->firstChannel + w->nChannels)
+                return p;
+        }
+    }
+    // HD-geometry formula as last resort
     int apaNo = chanNo / 2560;
     int offset = chanNo - apaNo*2560;
-    if (offset < 800) {
-        return 0;
-    }
-    else if (offset < 1600) {
-        return 1;
-    }
-    else {
-        return 2;
-    }
+    if (offset < 800) return 0;
+    else if (offset < 1600) return 1;
+    else return 2;
 }
 
 // Wrap up some ROOT pointer dancing.
@@ -168,26 +186,24 @@ WANT* maybe_cast(TObject* obj, const std::vector<std::string>& okay_types, bool 
     return nullptr;
 }
 
-void Data::load_waveform(const char* name, const char* title, double scale, double threshold)
+void Data::load_waveform(const char* name, const char* title, double scale, double threshold, TH2* ref)
 {
     TObject* obj = rootFile->Get(name);
     if (!obj) {
-    	TString msg = "Failed to get waveform ";
-    	msg += name;
-        msg += ", create dummy ...";
-        cout << msg << endl;
-    	// throw runtime_error(msg.c_str());
-        int nChannels = 2400;
-        int nTDCs = 6000;
-        int firstChannel = 0;
-        if (msg.Contains("hv")) {
-            firstChannel = 2400;
+        cout << "Failed to get waveform " << name << ", create dummy ..." << endl;
+        if (ref) {
+            // Match the geometry of the reference (decon) histogram exactly
+            obj = new TH2F(name, title,
+                ref->GetNbinsX(), ref->GetXaxis()->GetXmin(), ref->GetXaxis()->GetXmax(),
+                ref->GetNbinsY(), ref->GetYaxis()->GetXmin(), ref->GetYaxis()->GetXmax());
+        } else {
+            // Legacy fallback with HD-era hard-coded dimensions
+            int nChannels = 2400, nTDCs = 6000, firstChannel = 0;
+            TString msg(name);
+            if (msg.Contains("hv")) firstChannel = 2400;
+            else if (msg.Contains("hw")) { firstChannel = 4800; nChannels = 3456; }
+            obj = new TH2F(name, title, nChannels, firstChannel-0.5, firstChannel+nChannels-0.5, nTDCs, 0, nTDCs);
         }
-        else if (msg.Contains("hw")) {
-            firstChannel = 4800;
-            nChannels = 3456;
-        }
-        obj = new TH2F(name, title, nChannels,firstChannel-0.5,firstChannel+nChannels-0.5,nTDCs,0,nTDCs);
     }
     auto hist = maybe_cast<TH2, TH2F>(obj, {"TH2F", "TH2I"}, true);
     hist->SetXTitle("channel");

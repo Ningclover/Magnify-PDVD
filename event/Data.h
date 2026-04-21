@@ -2,6 +2,7 @@
 #define DATA_H
 
 class TH2F;
+class TH2;
 class TH1I;
 class TFile;
 class Waveforms;
@@ -39,7 +40,7 @@ public:
 
 
 private:
-    void load_waveform(const char* name, const char* title="", double scale=1, double threshold=600);
+    void load_waveform(const char* name, const char* title="", double scale=1, double threshold=600, TH2* ref=nullptr);
     void load_rawwaveform(const char* name, const char* baseline_name);
     void load_threshold(const char* name);
     // void load_badchannels();
