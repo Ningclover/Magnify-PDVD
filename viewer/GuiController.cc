@@ -48,8 +48,8 @@ GuiController::GuiController(const TGWindow *p, int w, int h, const char* fn, do
         filename = fn;
     }
     data = new Data(filename.Data(), threshold, frame, rebin);
-    mw->SetWindowName(TString::Format("Magnify: run %i, sub-run %i, event %i",
-        data->runNo, data->subRunNo, data->eventNo));
+    mw->SetWindowName(TString::Format("Magnify: run %i, sub-run %i, event %i, anode %i",
+        data->runNo, data->subRunNo, data->eventNo, data->anodeNo));
 
     for (int i=0; i<6; i++) {
         vw->can->cd(i+1);

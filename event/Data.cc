@@ -32,19 +32,29 @@ Data::Data(const char* filename, double threshold, const char* frame, int rebin)
     	msg += filename;
     	throw runtime_error(msg.c_str());
     }
-    bad_channels = new BadChannels( (TTree*)rootFile->Get("T_bad") );
+
+    // load_runinfo first so anodeNo is available for all histogram name lookups
     load_runinfo();
+
+    // suffix is the anode number when present (e.g. "7"), otherwise empty string
+    TString suf = (anodeNo >= 0) ? Form("%d", anodeNo) : "";
+    if (anodeNo >= 0)
+        cout << "Anode number: " << anodeNo << " (using suffix \"" << suf << "\")" << endl;
+
+    bad_channels = new BadChannels( (TTree*)rootFile->Get("T_bad" + suf) );
 
     load_channelstatus();
 
-    load_waveform("hu_raw", "U Plane (Denoised)", 1., threshold);
-    load_waveform("hv_raw", "V Plane (Denoised)", 1., threshold);
-    load_waveform("hw_raw", "W Plane (Denoised)", 1., threshold);
+    // denoised (post noise-filter) — no fallback, just load with suffix
+    load_waveform("hu_raw" + suf, "U Plane (Denoised)", 1., threshold);
+    load_waveform("hv_raw" + suf, "V Plane (Denoised)", 1., threshold);
+    load_waveform("hw_raw" + suf, "W Plane (Denoised)", 1., threshold);
 
+    // deconvoluted — try requested frame, fall back to _gauss
     for (int iplane=0; iplane<3; ++iplane) {
-        TString histName = Form("h%c_%s", 'u'+iplane, frame);
+        TString histName = Form("h%c_%s", 'u'+iplane, frame) + suf;
         if (!rootFile->Get(histName)) {
-            TString fallback = Form("h%c_gauss", 'u'+iplane);
+            TString fallback = Form("h%c_gauss", 'u'+iplane) + suf;
             if (rootFile->Get(fallback)) {
                 cout << histName << " not found, falling back to " << fallback << endl;
                 histName = fallback;
@@ -53,22 +63,26 @@ Data::Data(const char* filename, double threshold, const char* frame, int rebin)
         load_waveform(histName, Form("%c Plane (Deconvoluted)", 'U'+iplane), 1./(500.*rebin/4.0), threshold);
     }
 
-    load_rawwaveform("hu_orig", "hu_baseline");
-    load_rawwaveform("hv_orig", "hv_baseline");
-    load_rawwaveform("hw_orig", "hw_baseline");
+    load_rawwaveform("hu_orig" + suf, "hu_baseline" + suf);
+    load_rawwaveform("hv_orig" + suf, "hv_baseline" + suf);
+    load_rawwaveform("hw_orig" + suf, "hw_baseline" + suf);
 
-    load_threshold("hu_threshold");
-    load_threshold("hv_threshold");
-    load_threshold("hw_threshold");
+    load_threshold("hu_threshold" + suf);
+    load_threshold("hv_threshold" + suf);
+    load_threshold("hw_threshold" + suf);
 }
 
 void Data::load_runinfo()
 {
+    anodeNo = -1;
+    total_time_bin = 0;
     TTree *t = (TTree*)rootFile->Get("Trun");
     if (t) {
         t->SetBranchAddress("runNo", &runNo);
         t->SetBranchAddress("subRunNo", &subRunNo);
         t->SetBranchAddress("eventNo", &eventNo);
+        if (t->GetBranch("anodeNo"))       t->SetBranchAddress("anodeNo", &anodeNo);
+        if (t->GetBranch("total_time_bin")) t->SetBranchAddress("total_time_bin", &total_time_bin);
         t->GetEntry(0);
     }
     else {

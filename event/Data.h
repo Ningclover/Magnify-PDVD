@@ -30,6 +30,8 @@ public:
     int runNo;
     int subRunNo;
     int eventNo;
+    int anodeNo;
+    int total_time_bin;
 
     std::map<int, std::string> channel_status;
 
