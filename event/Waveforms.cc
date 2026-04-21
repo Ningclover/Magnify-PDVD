@@ -112,7 +112,6 @@ void Waveforms::SetThreshold(double x)
     TBox *box = 0;
     cout << fName << ": creating boxes ... " << flush;
     for (int i=1; i<=nChannels; i++) {
-        if (GetPlaneNo(i) != planeNo) continue;
         for (int j=1; j<=nTDCs; j++) {
             double content = hOrig->GetBinContent(i, j) * fScale;
             if (TMath::Abs(content)>threshold) {
