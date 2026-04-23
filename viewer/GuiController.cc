@@ -25,6 +25,11 @@
 #include "TLine.h"
 #include "TColor.h"
 #include "TStyle.h"
+#include "TLegend.h"
+#include "TGButton.h"
+#include "TGLabel.h"
+#include "TRootEmbeddedCanvas.h"
+#include "TGClient.h"
 
 #include <iostream>
 #include <vector>
@@ -48,6 +53,15 @@ GuiController::GuiController(const TGWindow *p, int w, int h, const char* fn, do
         filename = fn;
     }
     data = new Data(filename.Data(), threshold, frame, rebin);
+    captureMode = CAPTURE_NONE;
+    regionWindow = nullptr;
+    regionCanvas = nullptr;
+    for (int p = 0; p < 3; ++p) {
+        regChStart[p] = regChEnd[p] = nullptr;
+        regTLowS[p]  = regTHighS[p]  = nullptr;
+        regTLowE[p]  = regTHighE[p]  = nullptr;
+        for (int e = 0; e < 4; ++e) regionBoundary[p][e] = nullptr;
+    }
     mw->SetWindowName(TString::Format("Magnify: run %i, sub-run %i, event %i, anode %i",
         data->runNo, data->subRunNo, data->eventNo, data->anodeNo));
 
@@ -104,6 +118,8 @@ void GuiController::InitConnections()
     ));
     cw->rawWfButton->Connect("Clicked()", "GuiController", this, "UpdateShowRaw()");
     cw->unZoomButton->Connect("Clicked()", "GuiController", this, "UnZoom()");
+
+    cw->regionSumBtn->Connect("Clicked()", "GuiController", this, "ShowRegionWindow()");
 
     // stupid way to connect signal and slots
     vw->can->GetPad(1)->Connect("RangeChanged()", "GuiController", this, "SyncTimeAxis0()");
@@ -465,6 +481,26 @@ void GuiController::ProcessCanvasEvent(Int_t ev, Int_t x, Int_t y, TObject *sele
         double yy = pad->AbsPixeltoY(y);
         cout << "pad " << padNo << ": (" << xx << ", " << yy << ")" << endl;
 
+        // Region-sum capture mode: fill start/end fields on click in decon pads (4-6)
+        if (captureMode != CAPTURE_NONE && padNo >= 4 && padNo <= 6) {
+            if (!regionWindow) { captureMode = CAPTURE_NONE; return; }
+            int plane = padNo - 4;
+            int chanNo = TMath::Nint(xx);
+            int tickNo = TMath::Nint(yy);
+            if (captureMode == CAPTURE_START) {
+                regChStart[plane]->SetNumber(chanNo);
+                regTLowS[plane]->SetNumber(tickNo);
+                regTHighS[plane]->SetNumber(tickNo);
+                cout << "Set Start: plane " << plane << "  ch=" << chanNo << "  tick=" << tickNo << endl;
+            } else {
+                regChEnd[plane]->SetNumber(chanNo);
+                regTLowE[plane]->SetNumber(tickNo);
+                regTHighE[plane]->SetNumber(tickNo);
+                cout << "Set End: plane " << plane << "  ch=" << chanNo << "  tick=" << tickNo << endl;
+            }
+            return;  // keep mode active; user clicks Set Start/End again to exit
+        }
+
         int drawPad = (padNo-1) % 3 + 7;
         vw->can->cd(drawPad);
         if (padNo<=6) {
@@ -490,6 +526,317 @@ void GuiController::ProcessCanvasEvent(Int_t ev, Int_t x, Int_t y, TObject *sele
         // vw->can->GetPad(drawPad)->Update();
     }
 
+}
+
+void GuiController::ShowRegionWindow()
+{
+    if (!regionWindow) {
+        regionWindow = new TGMainFrame(gClient->GetRoot(), 700, 520);
+        regionWindow->SetWindowName("Region Sum");
+        regionWindow->DontCallClose();
+        regionWindow->Connect("CloseWindow()", "GuiController", this, "HideRegionWindow()");
+
+        // ---- Control group ----
+        TGGroupFrame* ctrl = new TGGroupFrame(regionWindow, "Region Selection", kVerticalFrame);
+        regionWindow->AddFrame(ctrl, new TGLayoutHints(kLHintsTop | kLHintsExpandX, 5, 5, 5, 2));
+
+        // Header row
+        {
+            TGHorizontalFrame* hdr = new TGHorizontalFrame(ctrl);
+            ctrl->AddFrame(hdr, new TGLayoutHints(kLHintsTop | kLHintsLeft, 2, 2, 2, 0));
+            hdr->AddFrame(new TGLabel(hdr, "      "),  new TGLayoutHints(kLHintsLeft, 2, 2, 1, 1));
+            hdr->AddFrame(new TGLabel(hdr, " ch start"), new TGLayoutHints(kLHintsLeft, 18, 2, 1, 1));
+            hdr->AddFrame(new TGLabel(hdr, "  t start low  -  high"), new TGLayoutHints(kLHintsLeft, 2, 2, 1, 1));
+            hdr->AddFrame(new TGLabel(hdr, "  ch end"), new TGLayoutHints(kLHintsLeft, 18, 2, 1, 1));
+            hdr->AddFrame(new TGLabel(hdr, "  t end low  -  high"), new TGLayoutHints(kLHintsLeft, 2, 2, 1, 1));
+        }
+
+        static const char* planeName[3] = {"U:", "V:", "W:"};
+        for (int p = 0; p < 3; ++p) {
+            TGHorizontalFrame* row = new TGHorizontalFrame(ctrl);
+            ctrl->AddFrame(row, new TGLayoutHints(kLHintsTop | kLHintsLeft, 2, 2, 3, 3));
+
+            row->AddFrame(new TGLabel(row, planeName[p]),
+                new TGLayoutHints(kLHintsLeft | kLHintsCenterY, 5, 5, 2, 2));
+
+            // ch_start
+            regChStart[p] = new TGNumberEntry(row, 0, 6, -1, TGNumberFormat::kNESInteger,
+                TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 15359);
+            row->AddFrame(regChStart[p], new TGLayoutHints(kLHintsLeft, 5, 2, 1, 1));
+
+            // t_low_s - t_high_s
+            regTLowS[p] = new TGNumberEntry(row, 0, 6, -1, TGNumberFormat::kNESInteger,
+                TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 10000);
+            row->AddFrame(regTLowS[p], new TGLayoutHints(kLHintsLeft, 10, 2, 1, 1));
+            row->AddFrame(new TGLabel(row, "-"),
+                new TGLayoutHints(kLHintsLeft | kLHintsCenterY, 3, 3, 2, 2));
+            regTHighS[p] = new TGNumberEntry(row, 0, 6, -1, TGNumberFormat::kNESInteger,
+                TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 10000);
+            row->AddFrame(regTHighS[p], new TGLayoutHints(kLHintsLeft, 2, 2, 1, 1));
+
+            // ch_end
+            regChEnd[p] = new TGNumberEntry(row, 0, 6, -1, TGNumberFormat::kNESInteger,
+                TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 15359);
+            row->AddFrame(regChEnd[p], new TGLayoutHints(kLHintsLeft, 10, 2, 1, 1));
+
+            // t_low_e - t_high_e
+            regTLowE[p] = new TGNumberEntry(row, 0, 6, -1, TGNumberFormat::kNESInteger,
+                TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 10000);
+            row->AddFrame(regTLowE[p], new TGLayoutHints(kLHintsLeft, 10, 2, 1, 1));
+            row->AddFrame(new TGLabel(row, "-"),
+                new TGLayoutHints(kLHintsLeft | kLHintsCenterY, 3, 3, 2, 2));
+            regTHighE[p] = new TGNumberEntry(row, 0, 6, -1, TGNumberFormat::kNESInteger,
+                TGNumberFormat::kNEANonNegative, TGNumberFormat::kNELLimitMinMax, 0, 10000);
+            row->AddFrame(regTHighE[p], new TGLayoutHints(kLHintsLeft, 2, 2, 1, 1));
+        }
+
+        // Button row
+        {
+            TGHorizontalFrame* btnRow = new TGHorizontalFrame(ctrl);
+            ctrl->AddFrame(btnRow, new TGLayoutHints(kLHintsTop | kLHintsCenterX, 5, 5, 5, 5));
+
+            TGTextButton* b;
+            b = new TGTextButton(btnRow, "Set Start");
+            b->Connect("Clicked()", "GuiController", this, "SetStartMode()");
+            btnRow->AddFrame(b, new TGLayoutHints(kLHintsLeft, 5, 5, 2, 2));
+
+            b = new TGTextButton(btnRow, "Set End");
+            b->Connect("Clicked()", "GuiController", this, "SetEndMode()");
+            btnRow->AddFrame(b, new TGLayoutHints(kLHintsLeft, 5, 5, 2, 2));
+
+            b = new TGTextButton(btnRow, "Sum");
+            b->Connect("Clicked()", "GuiController", this, "SumRegion()");
+            btnRow->AddFrame(b, new TGLayoutHints(kLHintsLeft, 5, 5, 2, 2));
+
+            b = new TGTextButton(btnRow, "Draw");
+            b->Connect("Clicked()", "GuiController", this, "DrawRegion()");
+            btnRow->AddFrame(b, new TGLayoutHints(kLHintsLeft, 5, 5, 2, 2));
+
+            b = new TGTextButton(btnRow, "Erase");
+            b->Connect("Clicked()", "GuiController", this, "EraseRegion()");
+            btnRow->AddFrame(b, new TGLayoutHints(kLHintsLeft, 5, 5, 2, 2));
+
+            b = new TGTextButton(btnRow, "Clear");
+            b->Connect("Clicked()", "GuiController", this, "ClearRegion()");
+            btnRow->AddFrame(b, new TGLayoutHints(kLHintsLeft, 5, 5, 2, 2));
+        }
+
+        // ---- Embedded canvas for histogram display ----
+        regionCanvas = new TRootEmbeddedCanvas("regionCanvas", regionWindow, 690, 300);
+        regionWindow->AddFrame(regionCanvas,
+            new TGLayoutHints(kLHintsTop | kLHintsExpandX | kLHintsExpandY, 5, 5, 2, 5));
+
+        regionWindow->MapSubwindows();
+        regionWindow->Resize(regionWindow->GetDefaultSize());
+        regionWindow->MapWindow();
+    } else {
+        regionWindow->RaiseWindow();
+        regionWindow->MapWindow();
+    }
+}
+
+void GuiController::HideRegionWindow()
+{
+    if (regionWindow) regionWindow->UnmapWindow();
+}
+
+void GuiController::SetStartMode()
+{
+    if (!regionWindow) ShowRegionWindow();
+    captureMode = (captureMode == CAPTURE_START) ? CAPTURE_NONE : CAPTURE_START;
+    cout << "Region sum: " << (captureMode == CAPTURE_START
+        ? "click on a decon pad to set start channel/tick (click Set Start again to exit)"
+        : "Set Start mode off") << endl;
+}
+
+void GuiController::SetEndMode()
+{
+    if (!regionWindow) ShowRegionWindow();
+    captureMode = (captureMode == CAPTURE_END) ? CAPTURE_NONE : CAPTURE_END;
+    cout << "Region sum: " << (captureMode == CAPTURE_END
+        ? "click on a decon pad to set end channel/tick (click Set End again to exit)"
+        : "Set End mode off") << endl;
+}
+
+void GuiController::SumRegion()
+{
+    if (!regionWindow || !regionCanvas) {
+        cout << "SumRegion: open Region Sum window first" << endl;
+        return;
+    }
+
+    // Per-plane time ranges
+    double tLowS[3], tHighS[3], tLowE[3], tHighE[3];
+    for (int p = 0; p < 3; ++p) {
+        tLowS[p]  = regTLowS[p]->GetNumber();
+        tHighS[p] = regTHighS[p]->GetNumber();
+        tLowE[p]  = regTLowE[p]->GetNumber();
+        tHighE[p] = regTHighE[p]->GetNumber();
+    }
+
+    // Global tick axis range: union over all planes
+    double tMin = tLowS[0], tMax = tHighS[0];
+    for (int p = 0; p < 3; ++p) {
+        tMin = std::min({tMin, tLowS[p], tHighS[p], tLowE[p], tHighE[p]});
+        tMax = std::max({tMax, tLowS[p], tHighS[p], tLowE[p], tHighE[p]});
+    }
+    if (tMax <= tMin) {
+        cout << "SumRegion: time range is empty -- set t start/end values first" << endl;
+        return;
+    }
+
+    static const char* planeLetter[3] = {"U", "V", "W"};
+    static const Color_t planeColor[3] = {kRed, kBlue, kGreen+2};
+
+    TCanvas* sc = regionCanvas->GetCanvas();
+    sc->cd();
+    sc->Clear();
+
+    TH2F* hRef = data->wfs.at(3)->hOrig;
+    int nTDCs  = hRef->GetNbinsY();
+    double yAxisLow  = hRef->GetYaxis()->GetBinLowEdge(1);
+    double yAxisHigh = hRef->GetYaxis()->GetBinUpEdge(nTDCs);
+
+    TH1F* sumHist[3] = {};
+    for (int p = 0; p < 3; ++p) {
+        Waveforms* w = data->wfs.at(p + 3);
+        TH2F* h = w->hOrig;
+
+        double csVal = regChStart[p]->GetNumber();
+        double ceVal = regChEnd[p]->GetNumber();
+        if (csVal > ceVal) std::swap(csVal, ceVal);
+
+        int csBin = h->GetXaxis()->FindBin(csVal);
+        int ceBin = h->GetXaxis()->FindBin(ceVal);
+        if (csBin > ceBin) std::swap(csBin, ceBin);
+
+        TString sname = TString::Format("hRegionSum_%s", planeLetter[p]);
+        TH1F* hExist = (TH1F*)gDirectory->FindObject(sname);
+        if (hExist) delete hExist;
+
+        TH1F* sum = new TH1F(sname, sname, nTDCs, yAxisLow, yAxisHigh);
+
+        for (int i = csBin; i <= ceBin; ++i) {
+            double frac = (ceBin == csBin) ? 0.0
+                : (double)(i - csBin) / (double)(ceBin - csBin);
+            double tl = tLowS[p]  + frac * (tLowE[p]  - tLowS[p]);
+            double th = tHighS[p] + frac * (tHighE[p] - tHighS[p]);
+            if (tl > th) std::swap(tl, th);
+            int jLow  = h->GetYaxis()->FindBin(tl);
+            int jHigh = h->GetYaxis()->FindBin(th);
+            for (int j = jLow; j <= jHigh; ++j) {
+                sum->AddBinContent(j, h->GetBinContent(i, j) * w->fScale);
+            }
+        }
+        sumHist[p] = sum;
+        cout << "SumRegion " << planeLetter[p] << ": ch "
+             << (int)csVal << "-" << (int)ceVal
+             << "  t[" << tLowS[p] << "-" << tHighS[p] << " -> "
+             << tLowE[p] << "-" << tHighE[p] << "]"
+             << "  integral=" << sum->Integral() << endl;
+    }
+
+    // Shared y range across all planes
+    double yHi = -1e30, yLo = 1e30;
+    for (int p = 0; p < 3; ++p) {
+        if (sumHist[p]->GetMaximum() > yHi) yHi = sumHist[p]->GetMaximum();
+        if (sumHist[p]->GetMinimum() < yLo) yLo = sumHist[p]->GetMinimum();
+    }
+    double yPad = (yHi > yLo) ? 0.1 * (yHi - yLo) : 1.0;
+
+    TLegend* leg = new TLegend(0.75, 0.7, 0.95, 0.9);
+    for (int p = 0; p < 3; ++p) {
+        sumHist[p]->SetLineColor(planeColor[p]);
+        sumHist[p]->SetLineWidth(2);
+        sumHist[p]->GetXaxis()->SetRangeUser(tMin, tMax);
+        sumHist[p]->GetXaxis()->SetTitle("ticks");
+        sumHist[p]->GetYaxis()->SetTitle("summed signal");
+        if (yHi > yLo)
+            sumHist[p]->GetYaxis()->SetRangeUser(yLo - yPad, yHi + yPad);
+        sumHist[p]->Draw(p == 0 ? "hist" : "hist same");
+
+        TString entry = TString::Format("%s ch %d-%d", planeLetter[p],
+            (int)regChStart[p]->GetNumber(),
+            (int)regChEnd[p]->GetNumber());
+        leg->AddEntry(sumHist[p], entry, "l");
+    }
+    leg->Draw();
+    sc->Update();
+}
+
+void GuiController::DrawRegion()
+{
+    EraseRegion();  // remove any previous drawing first
+    for (int p = 0; p < 3; ++p) {
+        if (!regChStart[p]) continue;
+        double cs  = regChStart[p]->GetNumber();
+        double ce  = regChEnd[p]->GetNumber();
+        double tls = regTLowS[p]->GetNumber();
+        double ths = regTHighS[p]->GetNumber();
+        double tle = regTLowE[p]->GetNumber();
+        double the = regTHighE[p]->GetNumber();
+
+        int padNo = p + 4;  // pads 4/5/6 = U/V/W decon
+        vw->can->cd(padNo);
+
+        // edge 0: left side (at ch_start), t_low_s to t_high_s
+        regionBoundary[p][0] = new TLine(cs, tls, cs, ths);
+        // edge 1: right side (at ch_end), t_low_e to t_high_e
+        regionBoundary[p][1] = new TLine(ce, tle, ce, the);
+        // edge 2: top — t_high_s to t_high_e
+        regionBoundary[p][2] = new TLine(cs, ths, ce, the);
+        // edge 3: bottom — t_low_s to t_low_e
+        regionBoundary[p][3] = new TLine(cs, tls, ce, tle);
+
+        for (int e = 0; e < 4; ++e) {
+            regionBoundary[p][e]->SetLineColor(kOrange+7);
+            regionBoundary[p][e]->SetLineWidth(2);
+            regionBoundary[p][e]->SetLineStyle(2);  // dashed
+            regionBoundary[p][e]->Draw();
+        }
+        vw->can->GetPad(padNo)->Modified();
+        vw->can->GetPad(padNo)->Update();
+    }
+}
+
+void GuiController::EraseRegion()
+{
+    for (int p = 0; p < 3; ++p) {
+        int padNo = p + 4;
+        TVirtualPad* pad = vw->can->GetPad(padNo);
+        bool changed = false;
+        for (int e = 0; e < 4; ++e) {
+            if (regionBoundary[p][e]) {
+                pad->GetListOfPrimitives()->Remove(regionBoundary[p][e]);
+                delete regionBoundary[p][e];
+                regionBoundary[p][e] = nullptr;
+                changed = true;
+            }
+        }
+        if (changed) {
+            pad->Modified();
+            pad->Update();
+        }
+    }
+}
+
+void GuiController::ClearRegion()
+{
+    EraseRegion();
+    for (int p = 0; p < 3; ++p) {
+        if (regChStart[p])  regChStart[p]->SetNumber(0);
+        if (regChEnd[p])    regChEnd[p]->SetNumber(0);
+        if (regTLowS[p])    regTLowS[p]->SetNumber(0);
+        if (regTHighS[p])   regTHighS[p]->SetNumber(0);
+        if (regTLowE[p])    regTLowE[p]->SetNumber(0);
+        if (regTHighE[p])   regTHighE[p]->SetNumber(0);
+    }
+    captureMode = CAPTURE_NONE;
+    if (regionCanvas) {
+        TCanvas* sc = regionCanvas->GetCanvas();
+        sc->Clear();
+        sc->Update();
+    }
 }
 
 void GuiController::HandleMenu(int id)

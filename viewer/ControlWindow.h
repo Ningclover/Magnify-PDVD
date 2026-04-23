@@ -28,6 +28,7 @@ public:
     TGTextButton  *unZoomButton;
     TGTextButton  *setThreshButton;
     TGNumberEntry *threshScaleEntry;
+    TGTextButton  *regionSumBtn;
 
     ClassDef(ControlWindow, 0)
 };

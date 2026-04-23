@@ -35,7 +35,7 @@ ControlWindow::ControlWindow(const TGWindow *p, int w, int h)
 
     badOnlyButton = new TGCheckButton(group_general, "evil mode");
     badOnlyButton->SetState(kButtonUp);
-    group_general->AddFrame(badOnlyButton, new TGLayoutHints(kLHintsTop | kLHintsLeft,  1, 1, 1, 1));    
+    group_general->AddFrame(badOnlyButton, new TGLayoutHints(kLHintsTop | kLHintsLeft,  1, 1, 1, 1));
 
     setThreshButton = new TGTextButton(group_general, "ch. thresh. x");
     group_general->AddFrame(setThreshButton, new TGLayoutHints(kLHintsTop | kLHintsLeft, 3, 2, 2, 2));
@@ -58,6 +58,9 @@ ControlWindow::ControlWindow(const TGWindow *p, int w, int h)
     timeModeButton = new TGCheckButton(group_general, "time mode  ");
     timeModeButton->SetState(kButtonUp);
     group_general->AddFrame(timeModeButton, new TGLayoutHints(kLHintsTop | kLHintsLeft,  1, 1, 1, 1));
+
+    regionSumBtn = new TGTextButton(group_general, "Region Sum");
+    group_general->AddFrame(regionSumBtn, new TGLayoutHints(kLHintsTop | kLHintsLeft, 6, 2, 2, 2));
 
     TGGroupFrame *group[3];
     for (int i=0; i<3; i++) {
@@ -113,11 +116,6 @@ ControlWindow::ControlWindow(const TGWindow *p, int w, int h)
             -100, 100);
         group_misc->AddFrame(zAxisRangeEntry[i], new TGLayoutHints(kLHintsTop | kLHintsLeft,  1, 1, 1, 1));
     }
-
-
-
-
-
 }
 
 ControlWindow::~ControlWindow()
