@@ -9,6 +9,7 @@
 #include "TPad.h"
 #include "TMath.h"
 
+#include <algorithm>
 #include <iostream>
 #include <vector>
 using namespace std;
@@ -35,18 +36,24 @@ RawWaveforms::~RawWaveforms()
 
 void RawWaveforms::SetBaseline()
 {
-    if(hBaseline) return;
-
-    // otherwise calculate baseline myself.
-    hBaseline = new TH1I(fName+"_baseline", "", nChannels, -0.5+firstChannel, -0.5+firstChannel+nChannels);
-    cout << "calculating baseline for " << fName << " ..." << endl;
-    TH1I hf("hf","Bin Frequency",4096,0,4096); //12-bit ADC
-    for (int chid=0; chid!=nChannels; chid++) {
-        hf.Reset();
-        for (int ibin=0; ibin!=nTDCs; ibin++) {
-            hf.Fill(int(hOrig->GetBinContent(chid+1, ibin+1)));
-        }
-        hBaseline->SetBinContent(chid+1, hf.GetMaximumBin()-1);
+    // Compute per-channel median pedestal from hOrig, store it in hBaseline,
+    // and subtract it from the TH2I in-place so downstream code sees
+    // baseline-free ADC for both 2D display and 1D waveform extraction.
+    if (!hBaseline) {
+        hBaseline = new TH1I(fName+"_baseline", "",
+            nChannels, -0.5+firstChannel, -0.5+firstChannel+nChannels);
+    }
+    cout << "calculating baseline (median) for " << fName << " ..." << endl;
+    vector<int> ticks(nTDCs);
+    for (int chid = 0; chid < nChannels; ++chid) {
+        for (int ibin = 0; ibin < nTDCs; ++ibin)
+            ticks[ibin] = int(hOrig->GetBinContent(chid+1, ibin+1));
+        nth_element(ticks.begin(), ticks.begin() + nTDCs/2, ticks.end());
+        int median = ticks[nTDCs/2];
+        hBaseline->SetBinContent(chid+1, median);
+        for (int ibin = 0; ibin < nTDCs; ++ibin)
+            hOrig->SetBinContent(chid+1, ibin+1,
+                hOrig->GetBinContent(chid+1, ibin+1) - median);
     }
 }
 
@@ -63,9 +70,9 @@ TH1I* RawWaveforms::Draw1D(int chanNo, const char* options)
         hOrig->GetYaxis()->GetBinUpEdge(nTDCs)
     );
     int binNo = hOrig->GetXaxis()->FindBin(chanNo);
-    int baseline = hBaseline->GetBinContent(binNo);
+    int baseline = hBaseline->GetBinContent(binNo);  // kept for title/ref-lines only
     for (int i=1; i<=nTDCs; i++) {
-        hWire->SetBinContent(i, hOrig->GetBinContent(binNo, i) - baseline);
+        hWire->SetBinContent(i, hOrig->GetBinContent(binNo, i));
     }
     hWire->SetTitle( TString::Format("baseline @%i", baseline) );
     hWire->Draw(options);
