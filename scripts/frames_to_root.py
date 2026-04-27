@@ -216,6 +216,169 @@ def _write_tag_per_apa(tfile, base_tag: str, anode_no: int, raw_data: dict,
     return True
 
 
+# ── threshold stitching ────────────────────────────────────────────────────────
+
+def _split_threshold(summary: np.ndarray, channels: np.ndarray,
+                     plane_sizes: list[int] | None):
+    """Split a 1-D per-channel threshold array into three plane slices.
+
+    Uses the same gap-detection logic as _split_planes so VD works correctly.
+    Returns list of (values, channels) tuples, one per plane.
+    """
+    if plane_sizes is not None:
+        starts = [0]
+        for size in plane_sizes[:-1]:
+            starts.append(starts[-1] + size)
+        ends = starts[1:] + [len(channels)]
+    else:
+        gap_idx = list(np.where(np.diff(channels) > 1)[0])
+        starts = [0] + [i + 1 for i in gap_idx]
+        ends   = [i + 1 for i in gap_idx] + [len(channels)]
+
+    slices = [(summary[s:e], channels[s:e]) for s, e in zip(starts, ends)]
+    while len(slices) < 3:
+        slices.append((np.zeros(1, dtype=summary.dtype), np.array([0])))
+    return slices[:3]
+
+
+def _stitch_threshold(archives_by_anode: dict[int, str],
+                      plane_sizes: list[int] | None,
+                      det_dims: tuple, tfile) -> bool:
+    """
+    Load summary_wiener arrays from all per-anode sp-frames archives and
+    stitch them into three whole-detector TH1I histograms:
+    hu_threshold, hv_threshold, hw_threshold.
+
+    Returns True if at least one anode contributed data.
+    """
+    import ROOT
+
+    xmin, xmax, _nticks = det_dims
+    nbinsx = round(xmax - xmin)
+
+    ht = [
+        ROOT.TH1I("hu_threshold", "hu_threshold", nbinsx, xmin, xmax),
+        ROOT.TH1I("hv_threshold", "hv_threshold", nbinsx, xmin, xmax),
+        ROOT.TH1I("hw_threshold", "hw_threshold", nbinsx, xmin, xmax),
+    ]
+    any_written = False
+
+    for anode_no in sorted(archives_by_anode):
+        path = archives_by_anode[anode_no]
+        raw_data = _load_archive(path)
+
+        # Find summary_wiener<N>_<ident> and matching channels_wiener<N>_<ident>
+        sw_key = next(
+            (k for k in raw_data
+             if re.match(rf"^summary_wiener{anode_no}_\d+$", k)), None)
+        if sw_key is None:
+            # try without anode digit (VD-style naming)
+            sw_key = next(
+                (k for k in raw_data if re.match(r"^summary_wiener_\d+$", k)), None)
+        if sw_key is None:
+            print(f"  WARNING: summary_wiener not found for anode {anode_no} in "
+                  f"{os.path.basename(path)} — threshold histogram will be empty")
+            continue
+
+        # Corresponding channels array (prefer channels_wiener<N>, fall back to channels_gauss<N>)
+        ident = sw_key.split("_")[-1]
+        ch_key = next(
+            (k for k in raw_data
+             if re.match(rf"^channels_wiener{anode_no}_{ident}$", k)), None)
+        if ch_key is None:
+            ch_key = next(
+                (k for k in raw_data
+                 if re.match(rf"^channels_gauss{anode_no}_{ident}$", k)), None)
+        if ch_key is None:
+            print(f"  WARNING: channels_wiener not found for anode {anode_no} — "
+                  f"cannot map thresholds to global channels")
+            continue
+
+        summary  = raw_data[sw_key]
+        channels = raw_data[ch_key]
+
+        print(f"  [anode {anode_no}] {sw_key}: {len(summary)} values, "
+              f"ch {int(channels[0])}-{int(channels[-1])}")
+
+        plane_slices = _split_threshold(summary, channels, plane_sizes)
+        for (vals, chs), h in zip(plane_slices, ht):
+            for val, ch in zip(vals, chs):
+                xbin = h.GetXaxis().FindBin(int(ch))
+                h.SetBinContent(xbin, int(round(float(val))))
+
+        any_written = True
+
+    if not any_written:
+        print("  WARNING: no summary_wiener data found — threshold histograms not written")
+        return False
+
+    tfile.cd()
+    for h in ht:
+        h.Write()
+    print("  → wrote hu_threshold, hv_threshold, hw_threshold")
+    return True
+
+
+def _write_single_anode_threshold(anode_no: int, archive_path: str,
+                                   plane_sizes: list[int] | None, tfile) -> bool:
+    """
+    Write per-anode TH1I threshold histograms (hu_threshold, hv_threshold,
+    hw_threshold) from the summary_wiener array in archive_path.
+    """
+    import ROOT
+
+    raw_data = _load_archive(archive_path)
+
+    sw_key = next(
+        (k for k in raw_data
+         if re.match(rf"^summary_wiener{anode_no}_\d+$", k)), None)
+    if sw_key is None:
+        sw_key = next(
+            (k for k in raw_data if re.match(r"^summary_wiener_\d+$", k)), None)
+    if sw_key is None:
+        print(f"    WARNING: summary_wiener not found for anode {anode_no} — "
+              f"threshold histograms not written")
+        return False
+
+    ident = sw_key.split("_")[-1]
+    ch_key = next(
+        (k for k in raw_data
+         if re.match(rf"^channels_wiener{anode_no}_{ident}$", k)), None)
+    if ch_key is None:
+        ch_key = next(
+            (k for k in raw_data
+             if re.match(rf"^channels_gauss{anode_no}_{ident}$", k)), None)
+    if ch_key is None:
+        print(f"    WARNING: channels_wiener not found for anode {anode_no} — "
+              f"cannot map thresholds to channels")
+        return False
+
+    summary  = raw_data[sw_key]
+    channels = raw_data[ch_key]
+    ch_min   = int(channels[0])
+    ch_max   = int(channels[-1])
+    nch      = ch_max - ch_min + 1
+
+    plane_slices = _split_threshold(summary, channels, plane_sizes)
+
+    for (vals, chs), plane_lbl in zip(plane_slices, PLANE_LABELS):
+        if len(chs) == 0:
+            continue
+        p_min = int(chs[0])
+        p_max = int(chs[-1])
+        p_nch = p_max - p_min + 1
+        hist_name = f"h{plane_lbl}_threshold"
+        h = ROOT.TH1I(hist_name, hist_name, p_nch, p_min - 0.5, p_max + 0.5)
+        h.SetDirectory(tfile)
+        for val, ch in zip(vals, chs):
+            xbin = h.GetXaxis().FindBin(int(ch))
+            h.SetBinContent(xbin, int(round(float(val))))
+        h.Write()
+        print(f"    → h{plane_lbl}_threshold ({len(chs)} ch, ch {p_min}-{p_max})")
+
+    return True
+
+
 # ── whole-detector stitching (auto mode) ──────────────────────────────────────
 
 def _stitch_tag(archives_by_anode: dict[int, str], internal_tag: str,
@@ -473,6 +636,19 @@ def _write_single_anode(anode_no: int, by_tag: dict, plane_sizes: list | None,
 
         any_tag_written = True
 
+    # Write per-channel Wiener thresholds (from the sp-frames archive)
+    sp_archive = None
+    for key in ("gauss", "wiener"):  # sp-frames archive carries summary_wiener
+        if anode_no in by_tag.get(key, {}):
+            sp_archive = by_tag[key][anode_no]
+            break
+    if sp_archive:
+        print(f"  [threshold] from {os.path.basename(sp_archive)}")
+        _write_single_anode_threshold(anode_no, sp_archive, plane_sizes, tfile)
+    else:
+        print(f"  WARNING: no sp-frames archive for anode {anode_no} — "
+              f"threshold histograms not written")
+
     tfile.Close()
     if any_tag_written:
         print(f"  Saved → {out_path}")
@@ -543,6 +719,14 @@ def run_auto(args: argparse.Namespace) -> None:
             _stitch_tag(anode_map, internal_tag, output_tag, plane_sizes,
                         det_dims, tfile, file_mode_first,
                         baseline_subtract=baseline_sub)
+
+        # Stitch per-channel Wiener thresholds from sp-frames archives
+        sp_map = by_tag.get("gauss") or by_tag.get("wiener") or {}
+        if sp_map:
+            print("\nStitching threshold histograms from summary_wiener ...")
+            _stitch_threshold(sp_map, plane_sizes, det_dims, tfile)
+        else:
+            print("\nWARNING: no sp-frames archives found — threshold histograms not written")
 
         tfile.Close()
         print(f"\nDone → {out_path}")
