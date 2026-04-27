@@ -1,87 +1,167 @@
-# Magnify
+# Magnify-PDVD
 
-## A magnifier to investigate raw and deconvoluted waveforms.
+A waveform viewer for ProtoDUNE detector data (HD and VD), built on ROOT.
 
-### Preprocess
-```
-./preprocess.sh /path/to/your/magnify.root
-```
-This is a wrapper for merging magnify histograms from all APAs. See more detailed description through "./preprocess.sh -h".
+---
 
+## 1. Convert Data to ROOT
 
-### Usage
+Input data arrives as per-anode `.tar.bz2` archives containing NumPy frames
+produced by Wire-Cell Toolkit.  The conversion script
+`scripts/frames_to_root.py` turns these into ROOT files that the viewer can
+open directly.  It requires Python with `numpy` and `ROOT` (PyROOT) available.
 
-```
-cd scripts/
-root -l loadClasses.C 'Magnify.C("path/to/rootfile")'
-# or
-root -l loadClasses.C 'Magnify.C("path/to/rootfile", <threshold>, "<frame>", <rebin>)'
-```
+### Auto mode — whole folder at once (recommended)
 
-The second argument is the default threshold for showing a box.
+Point the script at an event folder.  It discovers all archives automatically,
+converts every anode, and writes one ready-to-view ROOT file.
 
-The third, optional argument names which output from the signal processing to display.  Likely names are:
-
-- `decon` produced by the Wire Cell prototype (default).
-- `wiener` produced by the Wire Cell toolkit, used to define ROI or "hits".
-- `gauss` produced by the Wire Cell toolkit, used for charge measurement.
-
-The call to ROOT can be be called somewhat more easily via a shell
-script wrapper.  It assumes to stay in the source directory:
-
-```
-/path/to/magnify/magnify.sh /path/to/wcp-rootfile.root
-# or
-/path/to/magnify/magnify.sh /path/to/wct-rootfile.root 500 gauss 4
+**ProtoDUNE-HD** (4 anodes, 0–3):
+```bash
+python scripts/frames_to_root.py --detector hd auto \
+    /path/to/hd/run027409/evt_1/
+# output: /path/to/hd/run027409/evt_1/magnify-hd-run027409-evt_1.root
 ```
 
-### Example files
-
-An example ROOT file of waveforms can be found at twister:/home/wgu/Event27.root
-
-If one omits the file name, a dialog will open to let user select the file:
+**ProtoDUNE-VD** (8 anodes, 0–7):
+```bash
+python scripts/frames_to_root.py --detector vd auto \
+    /path/to/vd/run039324/evt_1/
+# output: /path/to/vd/run039324/evt_1/magnify-vd-run039324-evt_1.root
 ```
+
+The output file is saved in the same folder as the input archives.
+
+### Split mode — one file per anode
+
+Add `--split-anode` to produce a separate ROOT file for each anode instead of
+one stitched whole-detector file.  Each per-anode file can be opened directly
+in the viewer.
+
+```bash
+python scripts/frames_to_root.py --detector hd auto --split-anode \
+    /path/to/hd/run027409/evt_1/
+# output: magnify-hd-run027409-evt_1-anode0.root
+#         magnify-hd-run027409-evt_1-anode1.root
+#         magnify-hd-run027409-evt_1-anode2.root
+#         magnify-hd-run027409-evt_1-anode3.root
+```
+
+### What gets converted
+
+| Data type | Source archive pattern | Output histogram tag |
+|-----------|------------------------|----------------------|
+| Raw ADC (orig) | `*-orig-frames-anode<N>.tar.bz2` | `orig` |
+| Denoised (raw) | `*-sp-frames-raw-anode<N>.tar.bz2` | `raw` (baseline-subtracted) |
+| Deconvoluted (gauss) | `*-sp-frames-anode<N>.tar.bz2` | `decon` |
+| Wiener-filtered | `*-sp-frames-anode<N>.tar.bz2` | `wiener` |
+
+If any archive is missing, a warning is printed and the remaining types are
+still converted.
+
+---
+
+## 2. Build Magnify (first time, or after source changes)
+
+Magnify compiles its C++ source files at runtime via ROOT's ACLiC system.
+Run `build.sh` once to compile and prepare all shared libraries before
+launching the viewer for the first time.
+
+```bash
+cd /path/to/Magnify-PDVD
+./build.sh
+```
+
+**When to rebuild:**
+
+| Situation | Action |
+|-----------|--------|
+| First time running Magnify on this machine | `./build.sh` |
+| After `git pull` that changed any `.cc` or `.h` file | `./build.sh` |
+| After manually editing any source file in `event/` or `viewer/` | `./build.sh` |
+| Build fails or viewer crashes on startup with symbol errors | `./build.sh --force` |
+
+`build.sh` is incremental — it only recompiles files whose source is newer
+than their compiled `.so`.  Use `--force` to recompile everything from scratch.
+
+> **Note (macOS 15+ with conda ROOT):** the build produces harmless linker
+> warnings (`duplicate LC_RPATH`, `_main` undefined).  These are suppressed by
+> `build.sh` and do not affect the viewer.  The script fixes the underlying
+> issue automatically.
+
+---
+
+## 3. Run the Viewer
+
+```bash
+./magnify.sh /path/to/file.root
+# or with explicit options:
+./magnify.sh /path/to/file.root <threshold> <frame> <rebin>
+```
+
+**Arguments:**
+
+| Argument | Default | Meaning |
+|----------|---------|---------|
+| `threshold` | `30` | ADC cut for drawing a signal box in the 2D view |
+| `frame` | `decon` | Which signal processing output to display: `decon`, `wiener`, `raw`, `orig` |
+| `rebin` | `1` | Tick rebin factor (1 = full resolution, 4 = 4× compressed) |
+
+### Typical launch commands
+
+```bash
+# Whole-detector stitched file (all anodes merged)
+./magnify.sh ../../data_pd/hd/run027409/evt_1/magnify-hd-run027409-evt_1.root
+
+# Single anode file
+./magnify.sh ../../data_pd/hd/run027409/evt_1/magnify-hd-run027409-evt_1-anode0.root
+
+# View raw ADC instead of deconvoluted
+./magnify.sh /path/to/file.root 30 orig 1
+
+# View Wiener output, compressed ticks
+./magnify.sh /path/to/file.root 30 wiener 4
+```
+
+If no file is given, a file-picker dialog opens:
+```bash
 cd scripts/
 root -l loadClasses.C Magnify.C
 ```
 
 ### Event / Anode Navigation
 
-The control window has a second row with a **Navigation** group for switching between events and anodes without restarting ROOT:
+The control window has a **Navigation** group for switching between events and
+anodes without restarting ROOT:
 
 | Widget | Action |
-| --- | --- |
-| `anode` combo | Switch to a different anode (0–7) of the current event |
-| `event` combo | Jump directly to any discovered event |
-| `<` button | Previous event (same anode) |
-| `>` button | Next event (same anode) |
+|--------|--------|
+| `anode` combo | Switch to a different anode of the current event |
+| `event` combo | Jump to any discovered event |
+| `<` / `>` buttons | Previous / next event |
 
-Events are auto-discovered at startup by scanning the parent directory of the opened file for subdirectories matching `<run>_<event>` (e.g. `039324_0`, `039324_10`) that contain at least one `magnify-run<run>-evt<event>-anode*.root` file. Directories with extra suffixes (e.g. `039324_1_sel1`) are skipped. The list is sorted by `(run, event)`.
+Events are auto-discovered by scanning the parent directory for folders
+matching the `<run>_<event>` naming pattern that contain `magnify-*.root` files.
 
-Switching tears down the active `Data`, opens the new file, and redraws all 9 pads in place; Region Sum / RMS Analysis sub-windows are hidden and their caches are reset.
+---
+
+## 4. Other Tools
 
 ### Per-Channel RMS Noise Analysis
 
-Computes per-channel noise RMS for one or more Magnify ROOT files in batch (no display).  Output is written alongside each input as `<file>.rms.root`.
+Computes per-channel noise RMS in batch (no display).  Output is written
+alongside each input as `<file>.rms.root` and loaded automatically by the
+viewer on next startup.
 
+```bash
+./scripts/run_rms_analysis.sh /path/to/magnify-*.root
 ```
-./scripts/run_rms_analysis.sh input_files/040475_1/magnify-run040475-evt1-anode0.root
-# or process multiple files at once
-./scripts/run_rms_analysis.sh input_files/040475_1/magnify-run040475-evt1-anode*.root
-./scripts/run_rms_analysis.sh input_files/*/magnify-*.root
+
+### Channel Scan (experimental)
+
+```bash
+./channelscan.sh /path/to/file.root
 ```
 
-The algorithm follows the WCT percentile-based method (matching `Microboone.cxx`):
-1. Preliminary RMS on unflagged ADC samples.
-2. Signal flagging: mark |ADC| > 4×RMS bins, padded ±8 ticks.
-3. Final RMS recomputed with signal-flagged samples excluded.
-
-Results are stored in a `TTree` (one row per channel) inside the `.rms.root` cache file and are automatically loaded by the viewer at startup to apply per-channel Wiener thresholds.
-
-### (Experimental feature) Channel Scan
-```
-./channelscan.sh path/to/rootfile
-```
-This is a wrapper for looping over channels where the channel list can be predefined in the `bad tree` or a text file. 
-
-See detailed usage via `./channelscan.sh -h`.
+Loops over channels defined in a bad-channel tree or text file.  See
+`./channelscan.sh -h` for options.
